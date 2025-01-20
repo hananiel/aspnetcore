@@ -1,6 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Text.Json;
 using Microsoft.Extensions.CommandLineUtils;
 using Microsoft.Extensions.Tools.Internal;
 
@@ -23,12 +24,12 @@ internal sealed class ListCommand
 
             cmd.OnExecute(() =>
             {
-                return Execute(cmd.Reporter, cmd.ProjectOption.Value(), showTokensOption.HasValue());
+                return Execute(cmd.Reporter, cmd.ProjectOption.Value(), showTokensOption.HasValue(), cmd.OutputOption.Value());
             });
         });
     }
 
-    private static int Execute(IReporter reporter, string projectPath, bool showTokens)
+    private static int Execute(IReporter reporter, string projectPath, bool showTokens, string outputFormat)
     {
         if (!DevJwtCliHelpers.GetProjectAndSecretsId(projectPath, reporter, out var project, out var userSecretsId))
         {
@@ -36,6 +37,33 @@ internal sealed class ListCommand
         }
         var jwtStore = new JwtStore(userSecretsId);
 
+        switch (outputFormat)
+        {
+            case "json":
+                PrintJwtsJson(reporter, jwtStore);
+                break;
+            default:
+                PrintJwtsDefault(reporter, project, userSecretsId, jwtStore, showTokens);
+                break;
+        }
+
+        return 0;
+    }
+
+    private static void PrintJwtsJson(IReporter reporter, JwtStore jwtStore)
+    {
+        if (jwtStore.Jwts is { Count: > 0 } jwts)
+        {
+            reporter.Output(JsonSerializer.Serialize(jwts, JwtSerializerOptions.Default));
+        }
+        else
+        {
+            reporter.Output(JsonSerializer.Serialize(Array.Empty<Jwt>(), JwtSerializerOptions.Default));
+        }
+    }
+
+    private static void PrintJwtsDefault(IReporter reporter, string project, string userSecretsId, JwtStore jwtStore, bool showTokens)
+    {
         reporter.Output(Resources.FormatListCommand_Project(project));
         reporter.Output(Resources.FormatListCommand_UserSecretsId(userSecretsId));
 
@@ -69,6 +97,5 @@ internal sealed class ListCommand
             reporter.Output(Resources.ListCommand_NoJwts);
         }
 
-        return 0;
     }
 }

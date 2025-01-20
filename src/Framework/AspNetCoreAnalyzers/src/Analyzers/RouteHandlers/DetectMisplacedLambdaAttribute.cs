@@ -4,7 +4,6 @@
 using System.Diagnostics;
 using System.Linq;
 using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Operations;
 
@@ -71,7 +70,7 @@ public partial class RouteHandlerAnalyzer : DiagnosticAnalyzer
 
         static IMethodSymbol? GetReturnedInvocation(IBlockOperation blockOperation)
         {
-            foreach (var op in blockOperation.ChildOperations.Reverse())
+            foreach (var op in Enumerable.Reverse(blockOperation.ChildOperations))
             {
                 if (op is IReturnOperation returnStatement)
                 {

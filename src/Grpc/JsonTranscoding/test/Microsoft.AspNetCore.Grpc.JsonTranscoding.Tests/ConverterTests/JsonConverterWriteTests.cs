@@ -3,12 +3,17 @@
 
 using System.Text;
 using System.Text.Json;
+using Example.Hello;
 using Google.Protobuf;
 using Google.Protobuf.Reflection;
 using Google.Protobuf.WellKnownTypes;
+using Grpc.Shared;
+using Microsoft.AspNetCore.Grpc.JsonTranscoding.Internal;
 using Microsoft.AspNetCore.Grpc.JsonTranscoding.Internal.Json;
+using Microsoft.AspNetCore.Grpc.JsonTranscoding.Tests.Infrastructure;
 using Transcoding;
 using Xunit.Abstractions;
+using Type = System.Type;
 
 namespace Microsoft.AspNetCore.Grpc.JsonTranscoding.Tests.ConverterTests;
 
@@ -219,8 +224,9 @@ public class JsonConverterWriteTests
     {
         var v = new Int64Value { Value = 1 };
 
+        var descriptorRegistry = CreateDescriptorRegistry(typeof(Int64Value));
         var settings = new GrpcJsonSettings { WriteInt64sAsStrings = writeInt64sAsStrings };
-        var jsonSerializerOptions = CreateSerializerOptions(settings, TypeRegistry.Empty);
+        var jsonSerializerOptions = CreateSerializerOptions(settings, TypeRegistry.Empty, descriptorRegistry);
         var json = JsonSerializer.Serialize(v, jsonSerializerOptions);
 
         Assert.Equal(expectedJson, json);
@@ -233,8 +239,9 @@ public class JsonConverterWriteTests
     {
         var v = new UInt64Value { Value = 2 };
 
+        var descriptorRegistry = CreateDescriptorRegistry(typeof(UInt64Value));
         var settings = new GrpcJsonSettings { WriteInt64sAsStrings = writeInt64sAsStrings };
-        var jsonSerializerOptions = CreateSerializerOptions(settings, TypeRegistry.Empty);
+        var jsonSerializerOptions = CreateSerializerOptions(settings, TypeRegistry.Empty, descriptorRegistry);
         var json = JsonSerializer.Serialize(v, jsonSerializerOptions);
 
         Assert.Equal(expectedJson, json);
@@ -329,6 +336,23 @@ public class JsonConverterWriteTests
     }
 
     [Fact]
+    public void Struct_NullValue()
+    {
+        var helloRequest = new HelloRequest
+        {
+            ValueValue = Value.ForStruct(new Struct
+            {
+                Fields =
+                {
+                    ["prop"] = Value.ForNull()
+                }
+            })
+        };
+
+        AssertWrittenJson(helloRequest);
+    }
+
+    [Fact]
     public void Value_Root()
     {
         var value = Value.ForStruct(new Struct
@@ -341,6 +365,14 @@ public class JsonConverterWriteTests
                     Value.ForString("value2"))
             }
         });
+
+        AssertWrittenJson(value);
+    }
+
+    [Fact]
+    public void Value_Null()
+    {
+        var value = Value.ForNull();
 
         AssertWrittenJson(value);
     }
@@ -466,7 +498,26 @@ public class JsonConverterWriteTests
         AssertWrittenJson(dataTypes, new GrpcJsonSettings { WriteEnumsAsIntegers = true, IgnoreDefaultValues = true });
     }
 
-    private void AssertWrittenJson<TValue>(TValue value, GrpcJsonSettings? settings = null, bool? compareRawStrings = null) where TValue : IMessage
+    [Fact]
+    public void Enum_Imported()
+    {
+        var m = new SayRequest();
+        m.Country = Example.Country.Alpha3CountryCode.Afg;
+
+        AssertWrittenJson(m);
+    }
+
+    // See See https://github.com/protocolbuffers/protobuf/issues/11987
+    [Fact]
+    public void JsonNamePriority()
+    {
+        var m = new Issue047349Message { A = 10, B = 20, C = 30 };
+        var json = AssertWrittenJson(m);
+
+        Assert.Equal(@"{""b"":10,""a"":20,""d"":30}", json);
+    }
+
+    private string AssertWrittenJson<TValue>(TValue value, GrpcJsonSettings? settings = null, bool? compareRawStrings = null) where TValue : IMessage
     {
         var typeRegistery = TypeRegistry.FromFiles(
             HelloRequest.Descriptor.File,
@@ -485,7 +536,8 @@ public class JsonConverterWriteTests
         _output.WriteLine("Old:");
         _output.WriteLine(jsonOld);
 
-        var jsonSerializerOptions = CreateSerializerOptions(settings, typeRegistery);
+        var descriptorRegistry = CreateDescriptorRegistry(typeof(TValue));
+        var jsonSerializerOptions = CreateSerializerOptions(settings, typeRegistery, descriptorRegistry);
         var jsonNew = JsonSerializer.Serialize(value, jsonSerializerOptions);
 
         _output.WriteLine("New:");
@@ -496,11 +548,20 @@ public class JsonConverterWriteTests
 
         var comparer = new JsonElementComparer(maxHashDepth: -1, compareRawStrings: compareRawStrings ?? false);
         Assert.True(comparer.Equals(doc1.RootElement, doc2.RootElement));
+
+        return jsonNew;
     }
 
-    internal static JsonSerializerOptions CreateSerializerOptions(GrpcJsonSettings? settings, TypeRegistry? typeRegistery)
+    private static DescriptorRegistry CreateDescriptorRegistry(Type type)
     {
-        var context = new JsonContext(settings ?? new GrpcJsonSettings(), typeRegistery ?? TypeRegistry.Empty);
+        var descriptorRegistry = new DescriptorRegistry();
+        descriptorRegistry.RegisterFileDescriptor(TestHelpers.GetMessageDescriptor(type).File);
+        return descriptorRegistry;
+    }
+
+    internal static JsonSerializerOptions CreateSerializerOptions(GrpcJsonSettings? settings, TypeRegistry? typeRegistery, DescriptorRegistry descriptorRegistry)
+    {
+        var context = new JsonContext(settings ?? new GrpcJsonSettings(), typeRegistery ?? TypeRegistry.Empty, descriptorRegistry);
 
         return JsonConverterHelper.CreateSerializerOptions(context);
     }

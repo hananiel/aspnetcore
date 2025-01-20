@@ -5,7 +5,7 @@ using System;
 using System.Net;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Server.IntegrationTesting;
-using Microsoft.AspNetCore.Testing;
+using Microsoft.AspNetCore.InternalTesting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Testing;
 using Xunit;
@@ -31,6 +31,7 @@ public class HelloWorldTests : LoggedTest
 
     [ConditionalTheory]
     [MemberData(nameof(TestVariants))]
+    [QuarantinedTest("https://github.com/dotnet/aspnetcore/issues/45378")]
     public async Task HelloWorld(TestVariant variant)
     {
         var testName = $"HelloWorld_{variant.Server}_{variant.Tfm}_{variant.Architecture}_{variant.ApplicationType}";
@@ -159,7 +160,7 @@ public class HelloWorldTests : LoggedTest
             }
             // Output should contain the ApplicationException and the 500 status code
             Assert.Contains("System.ApplicationException: Application exception", output);
-            Assert.Contains("/throwexception - - - 500", output);
+            Assert.Contains("/throwexception - 500", output);
         }
     }
 }

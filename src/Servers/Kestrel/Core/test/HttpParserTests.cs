@@ -7,7 +7,7 @@ using System.Text;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure;
-using Microsoft.AspNetCore.Testing;
+using Microsoft.AspNetCore.InternalTesting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using HttpMethod = Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http.HttpMethod;
@@ -87,7 +87,13 @@ public class HttpParserTests : LoggedTest
 #pragma warning restore CS0618 // Type or member is obsolete
         ParseRequestLine(parser, requestHandler, buffer, out var consumed, out var examined));
 
-        Assert.Equal(CoreStrings.FormatBadRequest_InvalidRequestLine_Detail(requestLine[..^1].EscapeNonPrintable()), exception.Message);
+        var line = requestLine;
+        var nullIndex = line.IndexOf('\0');
+        if (nullIndex >= 0)
+        {
+            line = line.AsSpan().Slice(0, nullIndex + 2).ToString();
+        }
+        Assert.Equal(CoreStrings.FormatBadRequest_InvalidRequestLine_Detail(line[..^1].EscapeNonPrintable()), exception.Message);
         Assert.Equal(StatusCodes.Status400BadRequest, exception.StatusCode);
     }
 
@@ -134,7 +140,16 @@ public class HttpParserTests : LoggedTest
 #pragma warning restore CS0618 // Type or member is obsolete
             ParseRequestLine(parser, requestHandler, buffer, out var consumed, out var examined));
 
-        Assert.Equal(CoreStrings.FormatBadRequest_InvalidRequestLine_Detail(method.EscapeNonPrintable() + @" / HTTP/1.1\x0D"), exception.Message);
+        var nullIndex = method.IndexOf('\0');
+        if (nullIndex >= 0)
+        {
+            var line = method.AsSpan().Slice(0, nullIndex + 1).ToString();
+            Assert.Equal(CoreStrings.FormatBadRequest_InvalidRequestLine_Detail(line.EscapeNonPrintable()), exception.Message);
+        }
+        else
+        {
+            Assert.Equal(CoreStrings.FormatBadRequest_InvalidRequestLine_Detail(method.EscapeNonPrintable() + @" / HTTP/1.1\x0D"), exception.Message);
+        }
         Assert.Equal(StatusCodes.Status400BadRequest, exception.StatusCode);
     }
 
@@ -679,6 +694,107 @@ public class HttpParserTests : LoggedTest
         Assert.True(result);
     }
 
+    [Fact]
+    public void ParseLargeHeaderLineWithGratuitouslySplitBuffers()
+    {
+        // Must be greater than the stackalloc we use (256) to test the array pool path
+        var stringLength = 300;
+        var headers = $"Host: {new string('a', stringLength)}\r\nConnection: keep-alive\r\n\r\n";
+        var parser = CreateParser(_nullTrace, false);
+        var buffer = BytePerSegmentTestSequenceFactory.Instance.CreateWithContent(headers);
+
+        var requestHandler = new RequestHandler();
+        var reader = new SequenceReader<byte>(buffer);
+        var result = parser.ParseHeaders(requestHandler, ref reader);
+
+        Assert.True(result);
+    }
+
+    [Theory]
+    [InlineData("Host:\nConnection: keep-alive", "\n\r\n", false)]
+    [InlineData("Host:\nConnection: keep-aliv", "e\n\r\n", false)]
+    [InlineData("Host:\nC", "onnection: keep-alive\n\r\n", false)]
+    [InlineData("Connection: keep-alive", "\nHost:\n\r\n", false)]
+    [InlineData("Host:\r\nConnection: keep-alive", "\r\n\r\n", true)]
+    [InlineData("Host:\r\nConnection: keep-aliv", "e\r\n\r\n", true)]
+    [InlineData("Host:\r\nC", "onnection: keep-alive\r\n\r\n", true)]
+    [InlineData("Connection: keep-alive", "\r\nHost:\r\n\r\n", true)]
+    public void ParseHeaderLineWithSplitBuffers(string firstHeadersSegment, string secondHeadersSegment, bool quirkMode)
+    {
+        var parser = CreateParser(_nullTrace, quirkMode);
+        var buffer = ReadOnlySequenceFactory.CreateSegments(
+            Encoding.ASCII.GetBytes(firstHeadersSegment),
+            Encoding.ASCII.GetBytes(secondHeadersSegment));
+
+        var requestHandler = new RequestHandler();
+        var reader = new SequenceReader<byte>(buffer);
+        var result = parser.ParseHeaders(requestHandler, ref reader);
+
+        Assert.True(result);
+    }
+
+    [Fact]
+    public void ParseHeadersWithSplitBufferReturnsFalseWhenGivenIncompleteHeaders()
+    {
+        var parser = CreateParser(_nullTrace, false);
+        var buffer = ReadOnlySequenceFactory.CreateSegments(
+            Encoding.ASCII.GetBytes("Host:\nConnection: keep-aliv"),
+            Encoding.ASCII.GetBytes("e\n"));
+
+        var requestHandler = new RequestHandler();
+        var reader = new SequenceReader<byte>(buffer);
+        var result = parser.ParseHeaders(requestHandler, ref reader);
+
+        Assert.False(result);
+    }
+
+    [Theory]
+    [InlineData("H", "e")]
+    [InlineData("Header", ":")]
+    [InlineData("Header:", " ")]
+    [InlineData("Header: ", "v")]
+    [InlineData("Header: value", "\r")]
+    [InlineData("Header: value", "\r\n")]
+    [InlineData("Header: value", "\r\n\r")]
+    [InlineData("Header-1: value1", "\r\nH")]
+    [InlineData("Header-1: value1\r\nHeader-2", ":")]
+    [InlineData("Header-1: value1\r\nHeader-2: value", "2\r")]
+    [InlineData("Header-1: value1\r\nHeader-2: value2", "\r\n")]
+    [InlineData("Header-1: value1\r\nHeader-2: value2\r", "\n\r")]
+    public void ParseHeadersWithSplitBuffersReturnsFalseWhenGivenIncompleteHeaders(string firstHeadersSegment, string secondHeadersSegment)
+    {
+        var parser = CreateParser(_nullTrace, false);
+
+        var buffer = ReadOnlySequenceFactory.CreateSegments(
+            Encoding.ASCII.GetBytes(firstHeadersSegment),
+            Encoding.ASCII.GetBytes(secondHeadersSegment));
+        var requestHandler = new RequestHandler();
+        var reader = new SequenceReader<byte>(buffer);
+        Assert.False(parser.ParseHeaders(requestHandler, ref reader));
+    }
+
+    [Fact]
+    public void ParseHeadersWithSplitBuffersThrowsForSmallHeader()
+    {
+        var parser = CreateParser(CreateEnabledTrace(), false);
+
+        var buffer = ReadOnlySequenceFactory.CreateSegments(
+            Encoding.ASCII.GetBytes("a"),
+            Encoding.ASCII.GetBytes("b\n"));
+        var requestHandler = new RequestHandler();
+
+#pragma warning disable CS0618 // Type or member is obsolete
+        var exception = Assert.Throws<BadHttpRequestException>(() =>
+#pragma warning restore CS0618 // Type or member is obsolete
+        {
+            var reader = new SequenceReader<byte>(buffer);
+            parser.ParseHeaders(requestHandler, ref reader);
+        });
+
+        Assert.Equal(CoreStrings.FormatBadRequest_InvalidRequestHeader_Detail(@"ab\x0A"), exception.Message);
+        Assert.Equal(StatusCodes.Status400BadRequest, exception.StatusCode);
+    }
+
     private bool ParseRequestLine(IHttpParser<RequestHandler> parser, RequestHandler requestHandler, ReadOnlySequence<byte> readableBuffer, out SequencePosition consumed, out SequencePosition examined)
     {
         var reader = new SequenceReader<byte>(readableBuffer);
@@ -770,18 +886,18 @@ public class HttpParserTests : LoggedTest
 
         public void OnHeader(ReadOnlySpan<byte> name, ReadOnlySpan<byte> value)
         {
-            Headers[name.GetAsciiStringNonNullCharacters()] = value.GetAsciiStringNonNullCharacters();
+            Headers[name.GetAsciiString()] = value.GetAsciiString();
         }
 
         void IHttpHeadersHandler.OnHeadersComplete(bool endStream) { }
 
         public void OnStartLine(HttpMethod method, HttpVersion version, Span<byte> target, Span<byte> path, Span<byte> query, Span<byte> customMethod, bool pathEncoded)
         {
-            Method = method != HttpMethod.Custom ? HttpUtilities.MethodToString(method) : customMethod.GetAsciiStringNonNullCharacters();
+            Method = method != HttpMethod.Custom ? HttpUtilities.MethodToString(method) : customMethod.GetAsciiString();
             Version = HttpUtilities.VersionToString(version);
-            RawTarget = target.GetAsciiStringNonNullCharacters();
-            RawPath = path.GetAsciiStringNonNullCharacters();
-            Query = query.GetAsciiStringNonNullCharacters();
+            RawTarget = target.GetAsciiString();
+            RawPath = path.GetAsciiString();
+            Query = query.GetAsciiString();
             PathEncoded = pathEncoded;
         }
 
@@ -795,11 +911,11 @@ public class HttpParserTests : LoggedTest
             var path = target[..targetPath.Length];
             var query = target[targetPath.Length..];
 
-            Method = method != HttpMethod.Custom ? HttpUtilities.MethodToString(method) : customMethod.GetAsciiStringNonNullCharacters();
+            Method = method != HttpMethod.Custom ? HttpUtilities.MethodToString(method) : customMethod.GetAsciiString();
             Version = HttpUtilities.VersionToString(version);
-            RawTarget = target.GetAsciiStringNonNullCharacters();
-            RawPath = path.GetAsciiStringNonNullCharacters();
-            Query = query.GetAsciiStringNonNullCharacters();
+            RawTarget = target.GetAsciiString();
+            RawPath = path.GetAsciiString();
+            Query = query.GetAsciiString();
             PathEncoded = targetPath.IsEncoded;
         }
 

@@ -198,7 +198,7 @@ describe("hubConnection", () => {
                     // exception expected but none thrown
                     fail();
                 } catch (e) {
-                    expect(e.message).toBe(errorMessage);
+                    expect((e as any).message).toBe(errorMessage);
                 }
 
                 await hubConnection.stop();
@@ -216,7 +216,7 @@ describe("hubConnection", () => {
                     // exception expected but none thrown
                     fail();
                 } catch (e) {
-                    expect(e.message).toBe("The client attempted to invoke the streaming 'EmptyStream' method with a non-streaming invocation.");
+                    expect((e as any).message).toBe("The client attempted to invoke the streaming 'EmptyStream' method with a non-streaming invocation.");
                 }
 
                 await hubConnection.stop();
@@ -234,7 +234,7 @@ describe("hubConnection", () => {
                     // exception expected but none thrown
                     fail();
                 } catch (e) {
-                    expect(e.message).toBe("The client attempted to invoke the streaming 'Stream' method with a non-streaming invocation.");
+                    expect((e as any).message).toBe("The client attempted to invoke the streaming 'Stream' method with a non-streaming invocation.");
                 }
 
                 await hubConnection.stop();
@@ -302,7 +302,7 @@ describe("hubConnection", () => {
                 // client side method names are case insensitive
                 let methodName = "message";
                 const idx = Math.floor(Math.random() * (methodName.length - 1));
-                methodName = methodName.substr(0, idx) + methodName[idx].toUpperCase() + methodName.substr(idx + 1);
+                methodName = methodName.substring(0, idx) + methodName[idx].toUpperCase() + methodName.substring(idx + 1);
 
                 const receivePromise = new PromiseSource<string>();
                 hubConnection.on(methodName, (msg) => {
@@ -328,7 +328,7 @@ describe("hubConnection", () => {
                 // client side method names are case insensitive
                 let methodName = "message";
                 const idx = Math.floor(Math.random() * (methodName.length - 1));
-                methodName = methodName.substr(0, idx) + methodName[idx].toUpperCase() + methodName.substr(idx + 1);
+                methodName = methodName.substring(0, idx) + methodName[idx].toUpperCase() + methodName.substring(idx + 1);
 
                 let closeCount = 0;
                 let invocationCount = 0;
@@ -377,12 +377,12 @@ describe("hubConnection", () => {
                 try {
                     await hubConnection.start();
                 } catch (error) {
-                    if (error!.message.includes("404")) {
+                    if ((error as any)!.message.includes("404")) {
                         // SSE can race with the connection closing and the initial ping being successful or failing with a 404.
                         // LongPolling doesn't have pings and WebSockets is a synchronous API over a single HTTP request so it doesn't have the same issues
-                        expect(error!.message).toEqual("No Connection with that ID: Status code '404'");
+                        expect((error as any)!.message).toEqual("No Connection with that ID: Status code '404'");
                     } else {
-                        expect(error!.message).toEqual(expectedErrorMessage);
+                        expect((error as any)!.message).toEqual(expectedErrorMessage);
                     }
                     closePromise.resolve();
                 }
@@ -515,7 +515,7 @@ describe("hubConnection", () => {
                     await resultPromise;
                     expect(false).toBe(true);
                 } catch (err) {
-                    expect(err.message).toEqual("An unexpected error occurred invoking 'StreamingConcat' on the server. Exception: Something bad");
+                    expect((err as any).message).toEqual("An unexpected error occurred invoking 'StreamingConcat' on the server. HubException: Something bad");
                 } finally {
                     await hubConnection.stop();
                 }

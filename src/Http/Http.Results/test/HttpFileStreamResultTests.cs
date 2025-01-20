@@ -79,14 +79,14 @@ public class HttpFileStreamResultTests : FileStreamResultTestBase
     }
 
     [Fact]
-    public void ExecuteAsync_ThrowsArgumentNullException_WhenHttpContextIsNull()
+    public async Task ExecuteAsync_ThrowsArgumentNullException_WhenHttpContextIsNull()
     {
         // Arrange
         var result = new FileStreamHttpResult(new MemoryStream(), null);
         HttpContext httpContext = null;
 
         // Act & Assert
-        Assert.ThrowsAsync<ArgumentNullException>("httpContext", () => result.ExecuteAsync(httpContext));
+        await Assert.ThrowsAsync<ArgumentNullException>("httpContext", () => result.ExecuteAsync(httpContext));
     }
 
     [Fact]
@@ -107,7 +107,7 @@ public class HttpFileStreamResultTests : FileStreamResultTestBase
     {
         // Arrange
         var contentType = "application/x-zip";
-        var downloadName = "sample.zip";;
+        var downloadName = "sample.zip";
 
         // Act & Assert
         var result = Assert.IsAssignableFrom<IContentTypeHttpResult>(new FileStreamHttpResult(new MemoryStream(), contentType) { FileDownloadName = downloadName });

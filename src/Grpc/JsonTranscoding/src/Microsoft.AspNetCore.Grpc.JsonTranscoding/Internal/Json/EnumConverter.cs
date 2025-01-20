@@ -5,6 +5,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Google.Protobuf.Reflection;
+using Grpc.Shared;
 using Type = System.Type;
 
 namespace Microsoft.AspNetCore.Grpc.JsonTranscoding.Internal.Json;
@@ -20,12 +21,18 @@ internal sealed class EnumConverter<TEnum> : SettingsConverterBase<TEnum> where 
         switch (reader.TokenType)
         {
             case JsonTokenType.String:
-                var enumDescriptor = ResolveEnumDescriptor(typeToConvert);
+                var enumDescriptor = (EnumDescriptor?)Context.DescriptorRegistry.FindDescriptorByType(typeToConvert);
                 if (enumDescriptor == null)
                 {
                     throw new InvalidOperationException($"Unable to resolve descriptor for {typeToConvert}.");
                 }
-                var valueDescriptor = enumDescriptor.FindValueByName(reader.GetString()!);
+
+                var value = reader.GetString()!;
+                var valueDescriptor = enumDescriptor.FindValueByName(value);
+                if (valueDescriptor == null)
+                {
+                    throw new InvalidOperationException(@$"Error converting value ""{value}"" to enum type {typeToConvert}.");
+                }
 
                 return ConvertFromInteger(valueDescriptor.Number);
             case JsonTokenType.Number:
@@ -35,28 +42,6 @@ internal sealed class EnumConverter<TEnum> : SettingsConverterBase<TEnum> where 
             default:
                 throw new InvalidOperationException($"Unexpected JSON token: {reader.TokenType}.");
         }
-    }
-
-    private static EnumDescriptor? ResolveEnumDescriptor(Type typeToConvert)
-    {
-        var containingType = typeToConvert?.DeclaringType?.DeclaringType;
-
-        if (containingType != null)
-        {
-            var messageDescriptor = JsonConverterHelper.GetMessageDescriptor(containingType);
-            if (messageDescriptor != null)
-            {
-                for (var i = 0; i < messageDescriptor.EnumTypes.Count; i++)
-                {
-                    if (messageDescriptor.EnumTypes[i].ClrType == typeToConvert)
-                    {
-                        return messageDescriptor.EnumTypes[i];
-                    }
-                }
-            }
-        }
-
-        return null;
     }
 
     public override void Write(Utf8JsonWriter writer, TEnum value, JsonSerializerOptions options)

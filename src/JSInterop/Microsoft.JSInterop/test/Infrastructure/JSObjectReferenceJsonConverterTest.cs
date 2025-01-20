@@ -36,7 +36,7 @@ public class JSObjectReferenceJsonConverterTest
 
         // Act & Assert
         var ex = Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<IJSObjectReference>(json, JsonSerializerOptions));
-        Assert.Equal("Unexcepted JSON property foo.", ex.Message);
+        Assert.Equal("Unexpected JSON property foo.", ex.Message);
     }
 
     [Fact]
@@ -86,32 +86,5 @@ public class JSObjectReferenceJsonConverterTest
 
         // Assert
         Assert.Equal($"{{\"__jsObjectId\":{jsObjectRef.Id}}}", json);
-    }
-
-    private class TestJSUnmarshalledObjectReference : JSInProcessObjectReference, IJSUnmarshalledObjectReference
-    {
-        public TestJSUnmarshalledObjectReference(long id) : base(default!, id)
-        {
-        }
-
-        public TResult InvokeUnmarshalled<TResult>(string identifier)
-        {
-            throw new NotImplementedException();
-        }
-
-        public TResult InvokeUnmarshalled<T0, TResult>(string identifier, T0 arg0)
-        {
-            throw new NotImplementedException();
-        }
-
-        public TResult InvokeUnmarshalled<T0, T1, TResult>(string identifier, T0 arg0, T1 arg1)
-        {
-            throw new NotImplementedException();
-        }
-
-        public TResult InvokeUnmarshalled<T0, T1, T2, TResult>(string identifier, T0 arg0, T1 arg1, T2 arg2)
-        {
-            throw new NotImplementedException();
-        }
     }
 }

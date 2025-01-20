@@ -7,9 +7,9 @@ using System.Collections.Immutable;
 using System.Globalization;
 using System.Linq;
 using System.Threading;
+using Microsoft.AspNetCore.Analyzers.Infrastructure.RoutePattern;
 using Microsoft.AspNetCore.Analyzers.RouteEmbeddedLanguage.Infrastructure;
-using Microsoft.AspNetCore.Analyzers.RouteEmbeddedLanguage.Infrastructure.VirtualChars;
-using Microsoft.AspNetCore.Analyzers.RouteEmbeddedLanguage.RoutePattern;
+using Microsoft.AspNetCore.App.Analyzers.Infrastructure;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Diagnostics;
 
@@ -24,111 +24,89 @@ public class RoutePatternAnalyzer : DiagnosticAnalyzer
         DiagnosticDescriptors.RoutePatternUnusedParameter
     });
 
-    public void Analyze(SemanticModelAnalysisContext context)
+    private void AnalyzeSemanticModel(SemanticModelAnalysisContext context)
     {
         var semanticModel = context.SemanticModel;
         var syntaxTree = semanticModel.SyntaxTree;
         var cancellationToken = context.CancellationToken;
 
         var root = syntaxTree.GetRoot(cancellationToken);
-        WellKnownTypes? wellKnownTypes = null;
-        Analyze(context, root, ref wellKnownTypes, cancellationToken);
+        var routeUsageCache = RouteUsageCache.GetOrCreate(context.SemanticModel.Compilation);
+
+        // Update to use FilterSpan when available. See https://github.com/dotnet/aspnetcore/issues/48157
+        foreach (var item in root.DescendantTokens())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            AnalyzeToken(context, routeUsageCache, item, cancellationToken);
+        }
     }
 
-    private void Analyze(
-        SemanticModelAnalysisContext context,
-        SyntaxNode node,
-        ref WellKnownTypes? wellKnownTypes,
-        CancellationToken cancellationToken)
+    private static void AnalyzeToken(SemanticModelAnalysisContext context, RouteUsageCache routeUsageCache, SyntaxToken token, CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-
-        foreach (var child in node.ChildNodesAndTokens())
+        if (!RouteStringSyntaxDetector.IsRouteStringSyntaxToken(token, context.SemanticModel, cancellationToken, out var options))
         {
-            if (child.IsNode)
+            return;
+        }
+
+        var routeUsage = routeUsageCache.Get(token, cancellationToken);
+        if (routeUsage is null)
+        {
+            return;
+        }
+
+        foreach (var diag in routeUsage.RoutePattern.Diagnostics)
+        {
+            context.ReportDiagnostic(Diagnostic.Create(
+                DiagnosticDescriptors.RoutePatternIssue,
+                Location.Create(context.SemanticModel.SyntaxTree, diag.Span),
+                DiagnosticDescriptors.RoutePatternIssue.DefaultSeverity,
+                additionalLocations: null,
+                properties: null,
+                diag.Message));
+        }
+
+        if (routeUsage.UsageContext.MethodSymbol != null)
+        {
+            var routeParameterNames = new HashSet<string>(routeUsage.RoutePattern.RouteParameters.Select(p => p.Name), StringComparer.OrdinalIgnoreCase);
+
+            foreach (var parameter in routeUsage.UsageContext.ResolvedParameters)
             {
-                Analyze(context, child.AsNode()!, ref wellKnownTypes, cancellationToken);
+                routeParameterNames.Remove(parameter.RouteParameterName);
             }
-            else
+
+            foreach (var unusedParameterName in routeParameterNames)
             {
-                var token = child.AsToken();
-                if (!RouteStringSyntaxDetector.IsRouteStringSyntaxToken(token, context.SemanticModel, cancellationToken))
+                var unusedParameter = routeUsage.RoutePattern.GetRouteParameter(unusedParameterName);
+
+                var parameterInsertIndex = -1;
+                var insertPoint = CalculateInsertPoint(
+                    unusedParameter.Name,
+                    routeUsage.RoutePattern.RouteParameters,
+                    routeUsage.UsageContext.ResolvedParameters);
+                if (insertPoint is { } ip)
                 {
-                    continue;
-                }
-
-                if (wellKnownTypes == null && !WellKnownTypes.TryGetOrCreate(context.SemanticModel.Compilation, out wellKnownTypes))
-                {
-                    return;
-                }
-
-                var usageContext = RoutePatternUsageDetector.BuildContext(token, context.SemanticModel, wellKnownTypes, cancellationToken);
-
-                var virtualChars = CSharpVirtualCharService.Instance.TryConvertToVirtualChars(token);
-                var tree = RoutePatternParser.TryParse(virtualChars, supportTokenReplacement: usageContext.IsMvcAttribute);
-                if (tree == null)
-                {
-                    continue;
-                }
-
-                foreach (var diag in tree.Diagnostics)
-                {
-                    context.ReportDiagnostic(Diagnostic.Create(
-                        DiagnosticDescriptors.RoutePatternIssue,
-                        Location.Create(context.SemanticModel.SyntaxTree, diag.Span),
-                        DiagnosticDescriptors.RoutePatternIssue.DefaultSeverity,
-                        additionalLocations: null,
-                        properties: null,
-                        diag.Message));
-                }
-
-                if (usageContext.MethodSymbol != null)
-                {
-                    var routeParameterNames = new HashSet<string>(tree.RouteParameters.Select(p => p.Name), StringComparer.OrdinalIgnoreCase);
-
-                    // Get method parameters, including properties on AsParameters objects.
-                    var parameterSymbols = RoutePatternParametersDetector.GetParameterSymbols(usageContext.MethodSymbol);
-                    var resolvedParameterSymbols = RoutePatternParametersDetector.ResolvedParameters(usageContext.MethodSymbol, wellKnownTypes);
-                    
-                    foreach (var parameter in resolvedParameterSymbols)
+                    parameterInsertIndex = routeUsage.UsageContext.Parameters.IndexOf(ip.ExistingParameter);
+                    if (!ip.Before)
                     {
-                        routeParameterNames.Remove(parameter.Symbol.Name);
-                    }
-
-                    foreach (var unusedParameterName in routeParameterNames)
-                    {
-                        var unusedParameter = tree.GetRouteParameter(unusedParameterName);
-
-                        var parameterInsertIndex = -1;
-                        var insertPoint = CalculateInsertPoint(
-                            unusedParameter.Name,
-                            tree.RouteParameters,
-                            resolvedParameterSymbols);
-                        if (insertPoint is { } ip)
-                        {
-                            parameterInsertIndex = parameterSymbols.IndexOf(ip.ExistingParameter);
-                            if (!ip.Before)
-                            {
-                                parameterInsertIndex++;
-                            }
-                        }
-
-                        // These properties are used by the fixer.
-                        var propertiesBuilder = ImmutableDictionary.CreateBuilder<string, string>();
-                        propertiesBuilder.Add("RouteParameterName", unusedParameter.Name);
-                        propertiesBuilder.Add("RouteParameterPolicy", string.Join(string.Empty, unusedParameter.Policies));
-                        propertiesBuilder.Add("RouteParameterIsOptional", unusedParameter.IsOptional.ToString(CultureInfo.InvariantCulture));
-                        propertiesBuilder.Add("RouteParameterInsertIndex", parameterInsertIndex.ToString(CultureInfo.InvariantCulture));
-
-                        context.ReportDiagnostic(Diagnostic.Create(
-                            DiagnosticDescriptors.RoutePatternUnusedParameter,
-                            Location.Create(context.SemanticModel.SyntaxTree, unusedParameter.Span),
-                            DiagnosticDescriptors.RoutePatternUnusedParameter.DefaultSeverity,
-                            additionalLocations: null,
-                            properties: propertiesBuilder.ToImmutableDictionary(),
-                            unusedParameterName));
+                        parameterInsertIndex++;
                     }
                 }
+
+                // These properties are used by the fixer.
+                var propertiesBuilder = ImmutableDictionary.CreateBuilder<string, string?>();
+                propertiesBuilder.Add("RouteParameterName", unusedParameter.Name);
+                propertiesBuilder.Add("RouteParameterPolicy", string.Join(string.Empty, unusedParameter.Policies));
+                propertiesBuilder.Add("RouteParameterIsOptional", unusedParameter.IsOptional.ToString(CultureInfo.InvariantCulture));
+                propertiesBuilder.Add("RouteParameterInsertIndex", parameterInsertIndex.ToString(CultureInfo.InvariantCulture));
+
+                context.ReportDiagnostic(Diagnostic.Create(
+                    DiagnosticDescriptors.RoutePatternUnusedParameter,
+                    Location.Create(context.SemanticModel.SyntaxTree, unusedParameter.Span),
+                    DiagnosticDescriptors.RoutePatternUnusedParameter.DefaultSeverity,
+                    additionalLocations: null,
+                    properties: propertiesBuilder.ToImmutableDictionary(),
+                    unusedParameterName));
             }
         }
     }
@@ -153,7 +131,7 @@ public class RoutePatternAnalyzer : DiagnosticAnalyzer
                 continue;
             }
 
-            var parameterSymbol = resolvedParameterSymbols.FirstOrDefault(s => string.Equals(s.Symbol.Name, routeParameter.Name, StringComparison.OrdinalIgnoreCase));
+            var parameterSymbol = resolvedParameterSymbols.FirstOrDefault(s => string.Equals(s.RouteParameterName, routeParameter.Name, StringComparison.OrdinalIgnoreCase));
             if (parameterSymbol.Symbol != null)
             {
                 var s = parameterSymbol.TopLevelSymbol ?? parameterSymbol.Symbol;
@@ -175,9 +153,10 @@ public class RoutePatternAnalyzer : DiagnosticAnalyzer
 
     public override void Initialize(AnalysisContext context)
     {
-        context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
+        // Run on generated code to include routes specified in Razor files.
+        context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.Analyze | GeneratedCodeAnalysisFlags.ReportDiagnostics);
         context.EnableConcurrentExecution();
 
-        context.RegisterSemanticModelAction(Analyze);
+        context.RegisterSemanticModelAction(AnalyzeSemanticModel);
     }
 }
